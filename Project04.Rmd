@@ -1,0 +1,210 @@
+---
+title: "Project04_Data607"
+author: "Mahmud Hasan Al Raji"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Document classification
+It can be useful to be able to classify new "test" documents using already classified "training" documents.  A common example is using a corpus of labeled spam and ham (non-spam) e-mails to predict whether or not a new document is spam.For this project, you can start with a spam/ham data set, then predict the class of new documents (either withheld from the training data set or from another source such as your own spam folder). Here, I will create the Naive Bayes model to predict whether or not a new email is spam.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loading required libraries
+```{r }
+library(tm)
+library(reader)
+library(NLP)
+library(tidyverse)
+library(e1071) 
+library(caret)
+library(stringr)
+```
+
+# Creating data directory 
+The spam (20050311_spam_2) and ham (20030228_easy_ham) folders containing spam and ham emails are collected from https://spamassassin.apache.org/old/publiccorpus/. 
+```{r}
+spam_dir<-"F:\\CUNY masters\\assignment607\\project 4-spamham\\spam_2"
+ham_dir<-"F:\\CUNY masters\\assignment607\\project 4-spamham\\easy_ham"
+file1<-list.files(spam_dir)
+file2<-list.files(ham_dir)
+```
+
+# Creating spam emails dataframe with email text and classification (spam=1) columns
+```{r }
+# Creating spamlist with their titles iterating through all files in the spam folder 
+spamlist <- NA
+for(i in 1:length(file1))
+{
+  path<-paste0(spam_dir, "/", file1[i])  
+  text <-readLines(path)
+  tmp<- list(paste(text, collapse="\n"))
+  spamlist  = c(spamlist,tmp)
+}
+
+# Creating data frame
+spam <-as.data.frame(unlist(spamlist),stringsAsFactors = FALSE)
+spam$classification <- 1
+colnames(spam)<- c("email","classification")
+```
+
+# Creating ham emails dataframe with email text and classification (ham=0) columns
+```{r }
+# Creating a hamlist for all files with their titles
+hamlist <- NA
+for(i in 1:length(file2))
+{
+  path<-paste0(ham_dir, "/", file2[i])  
+  text <-readLines(path)
+  tmp<- list(paste(text, collapse="\n"))
+  hamlist  = c(hamlist,tmp)
+  
+}
+
+# Creating data frame 
+ham <-as.data.frame(unlist(hamlist),stringsAsFactors = FALSE)
+ham$classification <- 0
+colnames(ham)<-c("email","classification")
+
+```
+
+# Creating final dataframe by combining the ham and spam data frames 
+```{r }
+df_final <- rbind(ham, spam)
+```
+
+# looking at the proportion of the spam and the ham email in the dataset
+```{r }
+prop.table(table(df_final$classification))  
+```
+# Creating corpus
+```{r }
+dfcorpus <- Corpus(VectorSource(df_final$email))
+dfcorpus[[1]]$meta
+```
+# Cleaning corpus
+```{r}
+# Create a "addspace" function that finds a user specified pattern and substitutes the pattern with a space
+addspace <- content_transformer(function(x, pattern) {
+ return(gsub(pattern, " ", x))
+  })
+
+# Replace "-" with space 
+my_corpus <- tm_map(dfcorpus, addspace, "-")
+
+# Remove numbers
+my_corpus<-tm_map(my_corpus,content_transformer(removeNumbers))
+
+# Remove white spaces
+my_corpus<-tm_map(my_corpus,stripWhitespace)
+
+# To Lowercase Transformation
+corpus1<-tm_map(my_corpus, content_transformer(tolower))
+
+# Remove punctuation transformation
+corpus2 <- tm_map(corpus1, removePunctuation)
+
+# Stem document transformation
+corpus3<- tm_map(corpus2, stemDocument)
+
+# Remove stopwords transformation
+corpus4<-tm_map(corpus3, removeWords, stopwords("en"))
+
+```
+# Creating a Document term sparse matrix  
+```{r }
+dtm1 <- DocumentTermMatrix(corpus4)
+
+# Reducing sparsity
+dtm1 <- removeSparseTerms(dtm1, 1-(10/length(corpus4)))
+
+# Creating data frame
+dtm1_df<-(as.data.frame(as.matrix(dtm1)))
+dtm1_df$classification<-df_final$classification
+```
+# Top 30 terms in the combined dataset
+```{r }
+sort(colSums(dtm1_df ) ,decreasing = TRUE)[1:30]
+```
+# Top 30 terms in spam emails
+```{r}
+sort(colSums(dtm1_df %>% filter(`classification` == 1)) ,decreasing = TRUE)[1:30]
+```
+# Top 30 terms in ham emails
+```{r }
+sort(colSums(dtm1_df %>% filter(`classification` == 0)) ,decreasing = TRUE)[1:30]
+```
+
+# Splitting the data into two portions: 80 percent for training and 20 percent for testing
+```{r}
+sample_size <- floor(0.80 * nrow(dtm1_df))  
+set.seed(123)
+train <- sample(seq_len(nrow(dtm1_df)), size = sample_size)
+#Training data set
+dtm1_train <- dtm1_df[train, ]
+# Test data set
+dtm1_test <- dtm1_df[-train, ]
+```
+
+# Labeling each of the rows in the training and testing matrices
+```{r }
+train_labels <- dtm1_train$classification
+test_labels <- dtm1_test$classification
+```
+
+# Proportion for training & test labels
+```{r }
+prop.table(table(train_labels))
+prop.table(table(test_labels))
+```
+# Trimming the data
+```{r }
+# Finding minimum  frequency
+threshold <- 0.1
+min_freq <- round(dtm1$nrow*(threshold/100),0)
+min_freq
+# Create vector of most frequent words
+freq_words <- findFreqTerms(x = dtm1, lowfreq = min_freq)
+str(freq_words)
+# Filter the DTM
+dtm1_freq_train <- dtm1_train[ , freq_words]
+dtm1_freq_test <- dtm1_test[ , freq_words]
+dim(dtm1_freq_train)
+dim(dtm1_freq_test)
+```
+The training and test data sets now include 5571 features, which correspond to words appearing in at least five emails.
+
+# Changing the sparse matrix words frequency count to a categorical variable, 'yes' or 'no', depending on whether the word appears at all
+```{r }
+convert_values <- function(x) {
+  x <- ifelse(x > 0, "Yes", "No")
+}
+```
+
+# Converting the training and test matrices to character type matrices,each with cells indicating “Yes” or “No” 
+```{r }
+train1 <- apply(dtm1_freq_train, MARGIN = 2,
+                   convert_values)
+test1 <- apply(dtm1_freq_test, MARGIN = 2,
+                  convert_values)
+```
+
+# Creating Naive Bayes model from the training data 
+```{r }
+email_classifier <- naiveBayes(train1, train_labels)
+```
+
+# Generating predictions on test set to evaluate the model performance
+```{r }
+test_pred <- predict(email_classifier, test1)
+```
+
+
+# Comparing the predicted labels with the reference test data set labels and getting the summary of comparison
+```{r }
+confusionMatrix(test_pred, as.factor(test_labels))
+```
+# Conclusion
+Here, by applying the Naive Bayes algorithm, I have created a model to determine the probability that a given email is spam. It is seen that the accuracy of the model of predicting the spam email is 97.31% ! The model missed 3 spam emails and wrongly classified them as ham.
